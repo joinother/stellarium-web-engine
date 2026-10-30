@@ -1,0 +1,38 @@
+星象仪网页版（Stellarium Web 国内镜像）— 来源与许可声明
+=====================================================
+
+本站是 Stellarium Web（stellarium-web.org）的静态镜像，供中国大陆地区快速访问。
+本站不修改应用功能逻辑，仅：
+
+  1. 将前端资源（HTML / JS / CSS / WASM）的加载地址从境外 CDN 改写为本地相对路径；
+  2. 将星表、星座文化、地景、行星贴图等数据完整镜像至本站（data/ 与 online/ 目录）；
+  3. 在 WASM 引擎内将一处硬编码的默认数据根地址改写为本地路径；
+  4. 移除 Google Analytics / 广告追踪脚本与 Google Fonts，图标字体本地托管；
+  5. 添加右下角"星象仪网页版"标识徽章（mirror.css / mirror.js）；
+  6. 新增增强层（mirror-ui.js）：界面中文化、观测视角分享链接、观测点收藏与云同步；
+  7. 新增账号能力（server.js / webauthn.js）：手机号 / 邮箱验证码注册登录（邮箱注册强制绑定手机），
+     以及 WebAuthn 通行密钥（服务端 node:crypto 验签，无第三方依赖）。
+
+上游项目
+--------
+- 引擎：Stellarium Web Engine
+  https://github.com/Stellarium/stellarium-web-engine
+- Web 前端版本：frontend-1.16.0（2026-10-30 抓取）
+- 许可证：AGPL-3.0（ https://www.gnu.org/licenses/agpl-3.0.html ）
+  依据 AGPL-3.0，本镜像的修改说明如上公开；上游源码请访问上述仓库。
+
+数据来源与致谢
+--------------
+- 恒星/深空天体星表（.eph 格式）：Stellarium Labs 生成
+- Gaia DR3 恒星目录：ESA Gaia mission / DPAC（本镜像仅收录部分低层级）
+- DSS 彩色巡天：Digitized Sky Survey — STScI/NASA，由 CDS (Aladin/HipsGen) 彩色化与 Healpixed
+- 星座文化数据：Stellarium Sky Cultures（含中国星座）及 OpenNGC 等开放数据
+- 彗星轨道：MPC（Minor Planet Center）CometEls.txt；小行星：mpcorb.dat
+- 卫星 TLE：skysources（celestrak 类公开数据）
+
+镜像范围说明
+------------
+- 完整镜像：前端 + 肉眼/中倍星表（minimal / base / extended 0-3 层）、深空天体表、
+  全部 34 种星座文化、地景、行星与主要卫星表面贴图、银河贴图、DSS 低层级、彗星/小行星/卫星数据。
+- 未镜像（体积达 TB 级，静态站无法承载）：Gaia DR3 深空星表第 5 层及以上、
+  DSS 巡天高层级贴图。深度放大时这两类数据会缺失，其余功能不受影响。

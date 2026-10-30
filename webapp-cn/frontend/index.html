@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>星象仪网页版 · Stellarium Web 国内镜像</title>
+    
+    
+    
+    <link rel="stylesheet" href="./vendor/materialdesignicons.min.css">
+    <link rel="icon" type="image/x-icon" href="./favicon.ico">
+    <meta name="theme-color" content="#000"/>
+    <style type="text/css">
+    #nightmode {
+      background: #ff2200;
+      pointer-events: none;
+      height: 100vh;
+      width: 100vw;
+      position: absolute;
+      z-index: 1000;
+      mix-blend-mode: multiply;
+      visibility: hidden;
+    }
+    </style>
+    <script type="module" crossorigin src="./assets/index-Dhk2oPcR.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-D4IBqhPY.css">
+  <!-- 星象仪网页版（Stellarium Web 国内镜像）· 上游: https://github.com/Stellarium/stellarium-web-engine (AGPL-3.0) · 详见 NOTICE.txt -->
+<meta name="description" content="星象仪网页版：基于 Stellarium Web 的星空模拟，全部星表、星座文化与地景数据本地托管，无需访问境外 CDN。">
+<link rel="stylesheet" href="./mirror.css">
+<link rel="stylesheet" href="./mirror-cloud.css">
+</head>
+  <body>
+    <div id="nightmode"></div>
+    <noscript>
+      <strong>We're sorry but stellarium-web doesn't work properly without JavaScript enabled. Please enable it to continue.</strong>
+    </noscript>
+    <div id="app"></div>
+  <div id="mirror-badge">
+  <strong>星象仪网页版</strong> · 数据本地托管 · <a href="https://github.com/Stellarium/stellarium-web-engine" target="_blank" rel="noopener">Stellarium Web Engine</a>（AGPL-3.0）
+  <button id="mirror-badge-x" title="关闭">×</button>
+</div>
+<script src="./mirror.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@dev/lib/index.global.js"></script>
+<script src="./mirror-ui.js"></script>
+</body>
+</html>
