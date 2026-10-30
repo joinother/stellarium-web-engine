@@ -1,0 +1,12 @@
+{
+  "name": "stellarium-web-cn",
+  "version": "1.0.0",
+  "private": true,
+  "description": "星象仪网页版 —— Stellarium Web Engine 国内镜像（含统一账号体系与国产地图源）",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

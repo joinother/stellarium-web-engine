@@ -29,7 +29,9 @@ if (args.stars) {
   TARGETS.push({ name: 'stars/base', base: DATA + 'stars/base/', fmt: 'eph', to: +args.stars });
   TARGETS.push({ name: 'stars/minimal', base: DATA + 'stars/minimal/', fmt: 'eph', to: +args.stars });
 }
-if (args.dss) TARGETS.push({ name: 'dss', base: ONLINE + 'surveys/dss/v1/', fmt: 'webp', to: +args.dss });
+// 注意：官方 CDN 上 dss 只发布了 order>=3 的瓦片（order0-2 探测恒为 403），
+// 因此起始层级默认 3，否则一上来就判定"该层级无数据"而提前退出。
+if (args.dss) TARGETS.push({ name: 'dss', base: ONLINE + 'surveys/dss/v1/', fmt: 'webp', to: +args.dss, min: args.dssmin ? +args.dssmin : 3 });
 if (args.gaia) TARGETS.push({ name: 'gaia', base: ONLINE + 'surveys/gaia/v3/', fmt: 'eph', to: +args.gaia, min: 5 });
 if (args.milkyway) TARGETS.push({ name: 'milkyway', base: ONLINE + 'surveys/milkyway/v1/', fmt: 'webp', to: +args.milkyway });
 
