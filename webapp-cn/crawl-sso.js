@@ -36,6 +36,11 @@ const targets = [
     const before = bytes;
     await get(`${ONLINE}surveys/${dir}/properties`);
     for (let o = 0; o <= maxOrder; o++) {
+      // HiPS 最低层级（order 0）是单张全景图 Allsky.webp，不是 12 个分块瓦片
+      if (o === 0) {
+        await get(`${ONLINE}surveys/${dir}/Norder0/Allsky.webp`);
+        continue;
+      }
       const n = 12 * Math.pow(4, o);
       await pool([...Array(n).keys()], i =>
         get(`${ONLINE}surveys/${dir}/Norder${o}/Dir${Math.floor(i / 10000)}/Npix${i}.webp`), 20);

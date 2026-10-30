@@ -112,6 +112,8 @@ async function enumerateHips(baseUrl, maxOrder, opts = {}) {
   console.log('[3/6] 在线数据 (mpc / skysources / surveys 元数据)');
   await pool([
     'mpc/v1/CometEls.txt',
+    // 程序运行时实际请求的是 v4（v1 已废弃），两个版本都抓以兼容不同构建
+    'skysources/v4/tle_satellite.jsonl.gz',
     'skysources/v1/tle_satellite.jsonl.gz',
     'surveys/milkyway/v1/properties', 'surveys/gaia/v3/properties', 'surveys/dss/v1/properties',
   ], u => fetchOne(ONLINE + u), 5);
