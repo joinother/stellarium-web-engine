@@ -33,6 +33,7 @@ webapp-cn/
 ├── crawl.js           # 抓取前端与 libswe 数据（星表/星座文化/地景/行星贴图…）
 ├── crawl-dss.js       # 抓取 DSS 深空巡天瓦片（可指定层级）
 ├── crawl-sso.js       # 抓取太阳系天体（行星/卫星）表面贴图
+├── crawl-deep.js      # 按层级断点续传补全 DSS / 暗星表 / Gaia（支持 dry=1 试算）
 ├── postprocess.js     # 前端资源本地化
 ├── schema.sql         # 云数据库建表 + RLS 策略
 ├── NOTICE.txt         # AGPL-3.0 来源与修改声明
@@ -78,6 +79,51 @@ node server.js        # 默认 0.0.0.0:3000，可用 PORT / BIND_IP 覆盖
   AES-256-GCM 加密存档；断言校验覆盖 challenge / origin / rpIdHash / 签名 / 计数器。
 - 环境变量：`PORT`、`BIND_IP`、`WB_PUBLISHABLE_KEY`；
   `ALLOW_ANON_PASSKEY=1` 仅用于本机自测（允许未登录绑定），生产环境不要打开。
+
+## 资源完整性与按需补全
+
+首次抓取（`crawl.js` + `crawl-sso.js` + `crawl-dss.js`）约 **167MB**，按体积做了取舍，
+因此运行时仍会有少量数据块本地不存在。实测（无头浏览器收集所有响应，
+把数据路径返回 `text/html` 的判为缺失——本地服务有 SPA 回退，缺失不会表现为 404）分两类：
+
+**① 漏抓（已修复，属 bug）**
+
+| 缺失 | 原因 | 影响 |
+| --- | --- | --- |
+| `skysources/v4/tle_satellite.jsonl.gz` | 抓的是 v1，程序实际请求 v4 | 卫星轨道数据加载失败，反复重试 612 次 |
+| `surveys/sso/moon/v2`、`moon-normal/v3` 的 `Norder0/Allsky.webp` | 只抓了高清瓦片，漏了最低层级全景图 | 远处看月亮空白/糊，放大才出细节 |
+
+三者合计约 1.4MB，已直接补入镜像。
+
+**② 抓浅（体积权衡，非 bug）**
+
+| 数据 | 已抓到 | 何时会看出缺 | 补一层约需 |
+| --- | --- | --- | --- |
+| DSS 深空照片 | order 3 | 放大看星云星系超过 order 3 就空白 | order4 ≈ 46MB，order5 ≈ 184MB（官方最大 order9） |
+| 暗星表（8–12 等） | order 3 | 中等视野下较暗的星不出现 | order4 ≈ 129MB |
+| Gaia 暗星表（12 等以上） | 仅说明文件，无瓦片 | 极度放大时看不到最暗背景星 | order5 ≈ 146MB 起，往上到 TB 级 |
+| 银河全景 / 地景 | order 1 / 2 | 基本够用 | 小 |
+
+修复后常规视野下剩余缺失约 32 块（DSS 24 + 暗星表 8），镜头转到其他天区同样会遇到。
+
+**补全方式**（二选一）：
+
+```bash
+node crawl-deep.js dry=1 dss=4 stars=4   # 先只算账不下载
+node crawl-deep.js dss=4 stars=4         # 约 +175MB，日常放大基本够用
+node crawl-deep.js dss=5                 # 再加约 184MB，深空更耐放大
+```
+
+或在服务端开启缺块回源缓存（本地没有的块去上游取一次后存本地）：
+
+```bash
+OFFICIAL_FALLBACK=1 node server.js
+```
+
+该开关**默认关闭**，因为开启后服务器会访问境外 CDN，与「零境外请求」的部署目标冲突。
+
+**建议**：补到 `dss=4 stars=4`（总计约 340MB）；Gaia 的 TB 级数据集不建议全量镜像，
+确有需求时开启回源缓存按需兜底。
 
 ### 已知限制
 
