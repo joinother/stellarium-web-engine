@@ -444,9 +444,59 @@ function safeJoin(root, urlPath) {
   return p.startsWith(root) ? p : null;
 }
 
-function serveStatic(req, res, urlPath) {
+/* ------------------------------------------------- 缺块回源（可选，默认关闭）
+ * 首次抓取只取了较浅的层级，放大视野后会有缺块。开启后：本地没有的数据块
+ * 会去上游 CDN 取一次并落到本地缓存，之后就走本地；不开则完全不访问境外。
+ * 用 OFFICIAL_FALLBACK=1 开启。 */
+const FALLBACK = process.env.OFFICIAL_FALLBACK === '1';
+const UPSTREAM_DATA = 'https://stellarium.sfo2.cdn.digitaloceanspaces.com/stellarium-web/libswe-1.17.0-48d7978eca/';
+const UPSTREAM_ONLINE = 'https://stellarium.sfo2.cdn.digitaloceanspaces.com/';
+const inflight = new Map();
+
+function upstreamUrl(urlPath) {
+  if (urlPath.startsWith('/data/')) return UPSTREAM_DATA + urlPath.slice(6);
+  if (urlPath.startsWith('/online/')) return UPSTREAM_ONLINE + urlPath.slice(8);
+  return null;
+}
+
+async function mirrorFetch(urlPath) {
+  const remote = upstreamUrl(urlPath);
+  if (!remote) return null;
+  if (inflight.has(remote)) return inflight.get(remote);
+  const p = (async () => {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 15000);
+      const r = await fetch(remote, { signal: ctrl.signal, headers: { 'User-Agent': 'stellarium-web-cn-mirror/1.0' } });
+      clearTimeout(timer);
+      if (!r.ok) return null;
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (!buf.length) return null;
+      const dest = safeJoin(ROOT, urlPath);
+      if (!dest) return null;
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, buf);
+      console.log('[fallback] ' + urlPath + ' ' + buf.length + 'B');
+      return dest;
+    } catch (e) {
+      return null;
+    } finally {
+      setTimeout(() => inflight.delete(remote), 1000);
+    }
+  })();
+  inflight.set(remote, p);
+  return p;
+}
+
+async function serveStatic(req, res, urlPath) {
   if (urlPath.endsWith('/')) urlPath += 'index.html';
   let file = safeJoin(ROOT, urlPath);
+
+  if ((!file || !fs.existsSync(file) || fs.statSync(file).isDirectory())
+      && FALLBACK && /\.(eph|webp|png|jpg|json|dat|txt|gz|md|utf8)$/.test(urlPath)) {
+    const got = await mirrorFetch(urlPath);
+    if (got) file = got;
+  }
 
   if (!file || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     file = path.join(ROOT, 'index.html');
@@ -515,7 +565,10 @@ const server = http.createServer(async (req, res) => {
     return json(res, 401, { error: 'account service replaced by local auth (星象仪网页版)' });
   }
 
-  serveStatic(req, res, url.pathname);
+  serveStatic(req, res, url.pathname).catch(() => { try { res.writeHead(500); res.end(); } catch (e) {} });
 });
 
-server.listen(PORT, HOST, () => console.log(APP_NAME + ' listening on ' + HOST + ':' + PORT));
+server.listen(PORT, HOST, () => console.log(
+  APP_NAME + ' listening on ' + HOST + ':' + PORT +
+  ' · 缺块回源=' + (FALLBACK ? 'ON（缺失数据块会向上游取一次并缓存）' : 'OFF（完全不访问境外）')
+));
