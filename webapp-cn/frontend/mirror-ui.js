@@ -24,11 +24,14 @@
     publishableKey: 'wbpk_9t6FrPA3X0La8ej8Er0qOS_JbUC6UgrcfVY1TbJJnI8wfeSqynu0OQW',
     table: 'sky_places'
   };
-  var cloudClient = null;
+  var cloudClient = null;          // 仅第三方登录还用云 SDK，其余全部走本站统一身份
   var cloudUser = null;
+  var idToken = null;              // 本站签发的登录令牌
+  var idUser = null;               // 统一账户资料（手机 / 邮箱 / 通行密钥 / 第三方 全在这里）
   var acctProfile = null;
   var acctHasPassword = false;
   var listRefresher = null;
+  var TOKEN_KEY = 'sweb-id-token';
 
   /* ================================================================ 中文词表 */
   var ZH = {
@@ -543,36 +546,15 @@
     } catch (e) { cloudClient = null; }
   }
 
-  function rowToPlace(r) {
-    return {
-      id: r.client_id, name: r.name, url: r.url, fov: r.fov, lat: r.lat, lng: r.lng,
-      elev: r.elev, az: r.az, alt: r.alt, date: r.observed_at,
-      ts: r.created_at ? new Date(r.created_at).getTime() : 0
-    };
-  }
-
-  function placeToRow(p) {
-    return {
-      client_id: p.id, name: p.name, url: p.url, fov: p.fov, lat: p.lat, lng: p.lng,
-      elev: p.elev || null, az: p.az, alt: p.alt, observed_at: p.date || null,
-      owner_name: cloudUser ? (cloudUser.email || '').split('@')[0] : null
-    };
-  }
+  /* 收藏存在本站账户下（按 uid），不再按云用户分散 —— 换哪种方式登录都是同一份 */
 
   async function cloudPull() {
-    var res = await cloudClient.database.from(CLOUD.table).select('*').order('created_at', { ascending: false });
-    if (res.error) throw new Error(res.error.message || '拉取失败');
-    return (res.data || []).map(rowToPlace);
+    var j = await idGet('/api/id/places');
+    return j.places || [];
   }
 
-  async function cloudInsert(place) {
-    var res = await cloudClient.database.from(CLOUD.table).insert([placeToRow(place)]);
-    if (res.error && !/duplicate|unique/i.test(res.error.message || '')) throw new Error(res.error.message);
-  }
-
-  async function cloudDelete(clientId) {
-    var res = await cloudClient.database.from(CLOUD.table).delete().eq('client_id', clientId);
-    if (res.error) throw new Error(res.error.message);
+  async function cloudPushAll(list) {
+    await idPost('/api/id/places', { places: list });
   }
 
   async function cloudMerge() {
@@ -581,7 +563,7 @@
     var byId = {};
     local.forEach(function (p) { byId[p.id] = p; });
     var merged = local.slice();
-    var pushed = 0, pulled = 0;
+    var pulled = 0;
     remote.forEach(function (r) {
       var l = byId[r.id];
       if (!l) { merged.push(r); pulled++; }
@@ -590,59 +572,111 @@
         pulled++;
       }
     });
-    var remoteIds = {};
-    remote.forEach(function (r) { remoteIds[r.id] = 1; });
-    for (var k = 0; k < local.length; k++) {
-      if (!remoteIds[local[k].id]) {
-        try { await cloudInsert(local[k]); pushed++; } catch (e) { /* 单条失败不中断 */ }
-      }
-    }
     savePlaces(merged);
-    return { pushed: pushed, pulled: pulled };
+    await cloudPushAll(merged);
+    return { pushed: merged.length, pulled: pulled };
   }
 
   async function syncNow(btn) {
-    if (!cloudUser) return;
+    if (!loggedIn()) return;
     if (btn) btn.disabled = true;
     try {
       var r = await cloudMerge();
       if (listRefresher) listRefresher();
-      toast('云同步完成：上传 ' + r.pushed + ' 条，下载 ' + r.pulled + ' 条');
+      toast('同步完成：合并 ' + r.pushed + ' 条，新增 ' + r.pulled + ' 条');
     } catch (e) {
-      toast('云同步失败：' + e.message);
+      toast('同步失败：' + e.message);
     } finally {
       if (btn) btn.disabled = false;
     }
   }
 
   async function cloudPushPlace(place) {
-    if (!cloudUser) return;
-    try { await cloudInsert(place); } catch (e) { /* 静默 */ }
+    if (!loggedIn()) return;
+    try { await cloudPushAll(loadPlaces()); } catch (e) { /* 静默 */ }
   }
 
   async function cloudRemovePlace(id) {
-    if (!cloudUser) return;
-    try { await cloudDelete(id); } catch (e) { /* 静默 */ }
+    if (!loggedIn()) return;
+    try { await cloudPushAll(loadPlaces()); } catch (e) { /* 静默 */ }
   }
 
   async function restoreSession() {
-    if (!cloudReady()) return;
     initCloud();
-    if (!cloudClient) return;
-    try {
-      if (/[?&](code|state|oauth|relay)=/.test(location.search) && cloudClient.auth.handleOAuthCallback) {
-        try { await cloudClient.auth.handleOAuthCallback(); } catch (e) { /* 非 OAuth 回调 */ }
+    // 第三方登录回调：云 SDK 换到会话后，交给本站绑定/登录同一个账户
+    if (cloudClient && /[?&](code|state|oauth|relay)=/.test(location.search) && cloudClient.auth.handleOAuthCallback) {
+      try {
+        await cloudClient.auth.handleOAuthCallback();
+        var s0 = await cloudClient.auth.getSession();
+        var at = (s0 && s0.data && s0.data.session && s0.data.session.access_token) || '';
+        if (at) {
+          try {
+            var r = await idPost('/api/id/oauth', { accessToken: at, provider: 'workbuddy', token: getToken() });
+            setToken(r.token);
+            toast('第三方账号登录成功');
+          } catch (e2) { toast('第三方登录失败：' + fmtErr(e2)); }
+        }
         try {
           var sc = location.search.match(/sharecode=[^&]+/);
           history.replaceState(null, '', location.pathname + (sc ? '?' + sc[0] : ''));
-        } catch (e2) { /* ignore */ }
-      }
-      var s = await cloudClient.auth.getSession();
-      if (s && s.data && s.data.session) {
-        cloudUser = s.data.session.user || { email: '已登录' };
-        await onCloudSignedIn();
-      }
-    } catch (e) { /* 未登录 */ }
+        } catch (e3) { /* ignore */ }
+      } catch (e) { /* 非 OAuth 回调 */ }
+    }
+    var u = await idRefresh();
+    if (u) { await syncNow(null); checkGate(); }
+  }
+
+  /* ============================================ 统一身份层（本站账号后端）
+     一个账户可以挂手机 / 邮箱 / 通行密钥 / 第三方，任意一个匹配就归入同一账户。
+     令牌由本站签发，登录态不再依赖云 SDK 的会话。 */
+  function getToken() {
+    if (idToken) return idToken;
+    try { idToken = localStorage.getItem(TOKEN_KEY) || null; } catch (e) { idToken = null; }
+    return idToken;
+  }
+  function setToken(t) {
+    idToken = t || null;
+    try { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); } catch (e) { /* 无痕模式 */ }
+  }
+  async function idGet(path) {
+    var r = await fetch(path, { headers: { Authorization: 'Bearer ' + (getToken() || '') } });
+    var j = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  }
+  async function idPost(path, body) {
+    var r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (getToken() || '') },
+      body: JSON.stringify(body || {})
+    });
+    var j = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  }
+  function loggedIn() { return !!(idUser && getToken()); }
+
+  async function idRefresh() {
+    if (!getToken()) { idUser = null; return null; }
+    try {
+      var j = await idGet('/api/id/me');
+      idUser = j.user;
+      return idUser;
+    } catch (e) {
+      // 令牌失效（过期或服务器重建）就清掉，避免界面显示"已登录"却什么都取不到
+      idUser = null; setToken(null);
+      return null;
+    }
+  }
+  async function idLogout() {
+    try { await idPost('/api/id/logout', {}); } catch (e) { /* ignore */ }
+    idUser = null; acctProfile = null; setToken(null);
+  }
+  /* 登录成功后统一收尾：同步收藏 + 检查是否要补绑手机 */
+  async function afterLogin() {
+    await idRefresh();
+    await syncNow(null);
+    checkGate();
   }
 
   /* ============================================== 通行密钥 / 账号底层工具 */
@@ -675,7 +709,7 @@
   }
 
   function currentAccount() {
-    return { email: (cloudUser && cloudUser.email) || '', phone: (cloudUser && cloudUser.phone) || '' };
+    return { email: (idUser && idUser.email) || '', phone: (idUser && idUser.phone) || '' };
   }
 
   async function apiPost(path, body) {
@@ -730,8 +764,8 @@
 
   async function addPasskey(label) {
     if (!passkeySupported()) throw new Error('当前浏览器不支持通行密钥');
-    var blob = readSessionBlob();
-    var begin = await apiPost('/api/passkey/register/begin', { account: currentAccount() });
+    if (!loggedIn()) throw new Error('请先登录再绑定通行密钥');
+    var begin = await idPost('/api/id/passkey/register/begin', {});
     var cred = await navigator.credentials.create({
       publicKey: {
         challenge: b64uToBuf(begin.challenge),
@@ -743,50 +777,33 @@
       }
     });
     if (!cred) throw new Error('未创建通行密钥');
-    var res = await apiPost('/api/passkey/register/finish', {
+    var res = await idPost('/api/id/passkey/register/finish', {
       challengeId: begin.challengeId, label: label || '本机通行密钥',
-      account: currentAccount(), session: blob, credential: serializeAttestation(cred)
+      credential: serializeAttestation(cred)
     });
-    try {
-      await cloudClient.database.from('sweb_passkeys').insert([{ credential_id: cred.id, label: label || '本机通行密钥' }]);
-    } catch (e) { /* 云端索引表写失败不影响登录 */ }
+    if (res.user) idUser = res.user;
     return res;
   }
 
   async function loginWithPasskey() {
     if (!passkeySupported()) throw new Error('当前浏览器不支持通行密钥');
-    var begin = await apiPost('/api/passkey/login/begin', {});
+    var begin = await idPost('/api/id/passkey/login/begin', {});
     var cred = await navigator.credentials.get({
       publicKey: { challenge: b64uToBuf(begin.challenge), rpId: begin.rpId, userVerification: 'preferred', timeout: 60000 }
     });
     if (!cred) throw new Error('未选择通行密钥');
-    var res = await apiPost('/api/passkey/login/finish', {
+    var res = await idPost('/api/id/passkey/login/finish', {
       challengeId: begin.challengeId, credential: serializeAssertion(cred)
     });
-    if (!res.session || !res.session.key) throw new Error('没有可恢复的登录凭据');
-    localStorage.setItem(res.session.key, res.session.value);
-    await restoreSession();
+    if (!res.token) throw new Error('没有匹配的通行密钥');
+    setToken(res.token);
     return res;
   }
 
-  async function refreshPasskeySession() {
-    if (!cloudUser) return;
-    var blob = readSessionBlob();
-    if (!blob) return;
-    try { await apiPost('/api/passkey/session', { session: blob, account: currentAccount() }); } catch (e) { /* 静默 */ }
-  }
-
-  async function renderPasskeyList(wrap) {
-    wrap.innerHTML = '<div class="v-list-item-subtitle pa-2">读取中…</div>';
-    var items = [];
-    try {
-      var r = await apiPost('/api/passkey/list', {});
-      items = r.items || [];
-    } catch (e) {
-      wrap.innerHTML = '<div class="v-list-item-subtitle pa-2">通行密钥列表读取失败（可稍后重试）</div>';
-      return;
-    }
+  /* 通行密钥列表直接来自统一账户资料，不再单独查表 */
+  function renderPasskeyList(wrap) {
     wrap.innerHTML = '';
+    var items = (idUser && idUser.passkeys) || [];
     if (!items.length) {
       wrap.appendChild(m('div', 'v-list-item-subtitle pa-2', '还没有绑定通行密钥。'));
       return;
@@ -795,8 +812,8 @@
     items.forEach(function (it) {
       var del = vBtn('删除', 'text', async function () {
         try {
-          await apiPost('/api/passkey/delete', { id: it.id });
-          try { await cloudClient.database.from('sweb_passkeys').delete().eq('credential_id', it.id); } catch (e2) { /* ignore */ }
+          var r = await idPost('/api/id/passkey/delete', { id: it.id });
+          if (r.user) idUser = r.user;
           toast('已删除该通行密钥');
           renderPasskeyList(wrap);
         } catch (e3) { toast('删除失败：' + e3.message); }
@@ -804,7 +821,7 @@
       del.style.minWidth = 'auto';
       list.appendChild(vListItem({
         icon: 'mdi-key', title: it.label || '通行密钥',
-        sub: (it.hasSession ? '可免验证码登录' : '需先用验证码登录一次') + ' · ' + new Date(it.createdAt).toLocaleDateString(),
+        sub: '可直接免验证码登录 · ' + new Date(it.createdAt).toLocaleDateString(),
         action: del
       }));
     });
@@ -812,32 +829,14 @@
   }
 
   /* ============================================================ 账号资料/档案 */
-  async function dbSelectProfile() {
-    if (!cloudClient) return null;
-    try {
-      var r = await cloudClient.database.from('sweb_profiles').select('*').limit(1);
-      if (r.error) return null;
-      return (r.data && r.data[0]) || null;
-    } catch (e) { return null; }
-  }
-
-  async function dbSaveProfile(patch) {
-    try {
-      await cloudClient.database.from('sweb_profiles').upsert([patch], { onConflict: 'owner_id' });
-    } catch (e) { /* 静默 */ }
-    acctProfile = Object.assign({}, acctProfile || {}, patch);
-  }
-
   async function refreshAcctState() {
-    acctProfile = await dbSelectProfile();
-    try {
-      var r = await apiPost('/api/auth/password/status', {});
-      acctHasPassword = !!r.hasPassword;
-    } catch (e) { acctHasPassword = false; }
-    return acctProfile;
+    var u = await idRefresh();
+    acctProfile = u;
+    acctHasPassword = !!(u && u.hasPassword);
+    return u;
   }
 
-  function phoneBound() { return !!(acctProfile && acctProfile.phone_verified && acctProfile.phone); }
+  function phoneBound() { return !!(idUser && idUser.phoneVerified && idUser.phone); }
 
   /* ================================================== 短信验证码行（通用） */
   /* 绑定/换绑手机：只校验验证码不建号，绝不能走 verifyOtp(isExistingUser:false) */
@@ -881,9 +880,8 @@
       if (!/^1\d{10}$/.test(v)) { toast('请填写 11 位大陆手机号'); return; }
       btn.disabled = true; setBtn(btn, '发送中…');
       try {
-        var sent = await cloudClient.auth.sendOtp({ phone: v });
-        if (sent.error) { toast('发送失败：' + sent.error.message); btn.disabled = false; setBtn(btn, '获取验证码'); return; }
-        st.vid = sent.data.verificationId; st.sent = v;
+        var sent = await idPost('/api/id/otp/send', { kind: 'phone', value: v });
+        st.vid = sent.verificationId; st.sent = v;
         toast('验证码已发送');
         countdown(btn);
       } catch (e) { toast('发送失败：' + fmtErr(e)); btn.disabled = false; setBtn(btn, '获取验证码'); }
@@ -897,10 +895,10 @@
       if (!/^\d{4,8}$/.test(row.getCode())) { toast('请填写短信验证码'); return; }
       go.disabled = true; setBtn(go, '校验中…');
       try {
-        await verifyOnly(st.vid, row.getCode());
-        try { await cloudClient.database.from('sweb_phone_claims').insert([{ phone: v }]); }
-        catch (e2) { toast('该手机号已被其他账号绑定'); go.disabled = false; setBtn(go, '确认绑定'); return; }
-        await dbSaveProfile({ phone: v, phone_verified: true });
+        var r = await idPost('/api/id/otp/verify', {
+          kind: 'phone', value: v, code: row.getCode(), verificationId: st.vid, intent: 'bind'
+        });
+        idUser = r.user;
         toast('手机号绑定成功');
         d.close();
         if (opts.onDone) opts.onDone();
@@ -913,8 +911,7 @@
     act.appendChild(go);
     if (opts.blocking) {
       act.appendChild(vBtn('先退出登录', 'text', async function () {
-        try { await cloudClient.auth.signOut(); } catch (e) { /* ignore */ }
-        cloudUser = null; acctProfile = null;
+        await idLogout();
         d.close();
         toast('已退出登录');
       }));
@@ -924,7 +921,7 @@
   }
 
   async function checkGate() {
-    if (!cloudUser) return;
+    if (!loggedIn()) return;
     await refreshAcctState();
     if (!phoneBound()) {
       openBindPhone({
@@ -963,9 +960,8 @@
       if (!/^1\d{10}$/.test(v)) { toast('请填写 11 位大陆手机号'); return; }
       btn.disabled = true; setBtn(btn, '发送中…');
       try {
-        var sent = await cloudClient.auth.sendOtp({ phone: v });
-        if (sent.error) { toast('发送失败：' + sent.error.message); btn.disabled = false; setBtn(btn, '获取验证码'); return; }
-        st.vid = sent.data.verificationId; st.sent = v; st.existing = !!sent.data.isExistingUser;
+        var sent = await idPost('/api/id/otp/send', { kind: 'phone', value: v });
+        st.vid = sent.verificationId; st.sent = v; st.existing = !!sent.isExistingUser;
         toast(st.existing ? '验证码已发送，注意短信' : '验证码已发送，该号码将注册新账号');
         countdown(btn);
       } catch (e) { toast('发送失败：' + fmtErr(e)); btn.disabled = false; setBtn(btn, '获取验证码'); }
@@ -979,15 +975,13 @@
       if (!/^\d{4,8}$/.test(row.getCode())) { toast('请填写收到的验证码'); return; }
       go.disabled = true; setBtn(go, '验证中…');
       try {
-        var done = await cloudClient.auth.verifyOtp({
-          phone: v, verificationId: st.vid, isExistingUser: st.existing, token: row.getCode()
+        var r = await idPost('/api/id/otp/verify', {
+          kind: 'phone', value: v, code: row.getCode(), verificationId: st.vid
         });
-        if (done.error) { toast('验证失败：' + done.error.message); }
-        else {
-          cloudUser = (done.data && done.data.user) || { phone: v };
-          d.close();
-          await afterSignIn('', v);
-        }
+        setToken(r.token);
+        d.close();
+        toast(r.fresh ? '注册成功，已登录' : '登录成功');
+        await afterLogin();
       } catch (e) { toast('验证失败：' + fmtErr(e)); }
       go.disabled = false; setBtn(go, '登录 / 注册');
     });
@@ -1011,11 +1005,11 @@
         if (!v || !pw.getValue()) { toast('请填写邮箱与密码'); return; }
         go.disabled = true; setBtn(go, '登录中…');
         try {
-          var r = await apiPost('/api/auth/password/login', { identifier: v, password: pw.getValue() });
-          localStorage.setItem(r.session.key, r.session.value);
+          var r = await idPost('/api/id/login/password', { identifier: v, password: pw.getValue() });
+          setToken(r.token);
           d.close();
-          await restoreSession();
           toast('登录成功');
+          await afterLogin();
         } catch (e) { toast('登录失败：' + fmtErr(e)); }
         go.disabled = false; setBtn(go, '登录');
       });
@@ -1026,16 +1020,15 @@
       return;
     }
 
-    var st = { vid: '', sent: '', existing: false, token: null };
+    var st = { vid: '', sent: '', existing: false };
     var row = codeRow('邮件验证码', async function (code, btn) {
       var v = email.getValue().trim();
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) { toast('请填写正确的邮箱'); return; }
       btn.disabled = true; setBtn(btn, '发送中…');
       try {
-        var sent = await cloudClient.auth.sendOtp({ email: v });
-        if (sent.error) { toast('发送失败：' + sent.error.message); btn.disabled = false; setBtn(btn, '获取验证码'); return; }
-        st.vid = sent.data.verificationId; st.sent = v; st.existing = !!sent.data.isExistingUser;
-        toast(st.existing ? '验证码已发送到邮箱' : '验证码已发送；新邮箱注册还需绑定手机号');
+        var sent = await idPost('/api/id/otp/send', { kind: 'email', value: v });
+        st.vid = sent.verificationId; st.sent = v; st.existing = !!sent.isExistingUser;
+        toast(st.existing ? '验证码已发送到邮箱' : '验证码已发送；新邮箱登录后还需绑定手机号');
         countdown(btn);
       } catch (e) { toast('发送失败：' + fmtErr(e)); btn.disabled = false; setBtn(btn, '获取验证码'); }
     });
@@ -1046,87 +1039,25 @@
     act.appendChild(go);
     wrap.appendChild(act);
 
-    /* 新邮箱注册第二步：绑定手机 */
-    var step2 = m('div', 'mt-2', '<div class="text-body-2 mb-2">绑定手机号（邮箱注册必填）</div>');
-    step2.style.display = 'none';
-    var phone2 = vField('手机号（11 位）', 'tel', 'tel');
-    step2.appendChild(phone2);
-    var s2 = { vid: '', sent: '' };
-    var row2 = codeRow('短信验证码', async function (code, btn) {
-      var v = phone2.getValue().replace(/\s/g, '');
-      if (!/^1\d{10}$/.test(v)) { toast('请填写 11 位大陆手机号'); return; }
-      btn.disabled = true; setBtn(btn, '发送中…');
-      try {
-        var sent = await cloudClient.auth.sendOtp({ phone: v });
-        if (sent.error) { toast('发送失败：' + sent.error.message); btn.disabled = false; setBtn(btn, '获取验证码'); return; }
-        s2.vid = sent.data.verificationId; s2.sent = v;
-        toast('验证码已发送到手机');
-        countdown(btn);
-      } catch (e) { toast('发送失败：' + fmtErr(e)); btn.disabled = false; setBtn(btn, '获取验证码'); }
-    });
-    step2.appendChild(row2);
-    var finish = vBtn('完成注册', undefined, async function () {
-      var v = email.getValue().trim();
-      var phoneVal = phone2.getValue().replace(/\s/g, '');
-      if (!s2.vid || s2.sent !== phoneVal) { toast('请先获取短信验证码'); return; }
-      if (!/^\d{4,8}$/.test(row2.getCode())) { toast('请填写短信验证码'); return; }
-      finish.disabled = true; setBtn(finish, '校验手机号…');
-      try {
-        await verifyOnly(s2.vid, row2.getCode());
-      } catch (e) {
-        toast('手机验证失败：' + fmtErr(e));
-        finish.disabled = false; setBtn(finish, '完成注册');
-        return;
-      }
-      setBtn(finish, '创建账号…');
-      try {
-        var up = await cloudClient.auth.signUp({ email: v, verificationToken: st.token });
-        if (up.error) { toast('注册失败：' + up.error.message); finish.disabled = false; setBtn(finish, '完成注册'); return; }
-        cloudUser = (up.data && up.data.user) || { email: v };
-        d.close();
-        await afterSignIn(v, phoneVal);
-      } catch (e) {
-        toast('注册失败：' + fmtErr(e));
-        finish.disabled = false; setBtn(finish, '完成注册');
-      }
-    });
-    step2.appendChild(finish);
-    wrap.appendChild(step2);
-
     async function verifyEmail() {
       var v = email.getValue().trim();
       if (!st.vid || st.sent !== v) { toast('请先获取邮件验证码'); return; }
       if (!/^\d{4,8}$/.test(row.getCode())) { toast('请填写邮箱收到的验证码'); return; }
-      if (st.existing) {
-        go.disabled = true; setBtn(go, '登录中…');
-        try {
-          var done = await cloudClient.auth.verifyOtp({
-            email: v, verificationId: st.vid, isExistingUser: true, token: row.getCode()
-          });
-          if (done.error) toast('登录失败：' + done.error.message);
-          else {
-            cloudUser = (done.data && done.data.user) || { email: v };
-            d.close();
-            await afterSignIn(v, '');
-          }
-        } catch (e) { toast('登录失败：' + fmtErr(e)); }
-        go.disabled = false; setBtn(go, '登录 / 注册');
-        return;
-      }
-      go.disabled = true; setBtn(go, '校验中…');
+      go.disabled = true; setBtn(go, '登录中…');
       try {
-        st.token = await verifyOnly(st.vid, row.getCode());
-        toast('邮箱已验证，请继续绑定手机号');
-        step2.style.display = '';
-        setBtn(go, '邮箱已验证 ✓');
-      } catch (e) {
-        toast('邮箱验证失败：' + fmtErr(e));
-        go.disabled = false; setBtn(go, '登录 / 注册');
-      }
+        var r = await idPost('/api/id/otp/verify', {
+          kind: 'email', value: v, code: row.getCode(), verificationId: st.vid
+        });
+        setToken(r.token);
+        d.close();
+        toast(r.fresh ? '注册成功，已登录' : '登录成功');
+        await afterLogin();
+      } catch (e) { toast('登录失败：' + fmtErr(e)); }
+      go.disabled = false; setBtn(go, '登录 / 注册');
     }
 
     wrap.appendChild(m('div', 'text-caption text-medium-emphasis mt-2',
-      '邮箱注册必须绑定并验证手机号：邮件验证码 + 短信验证码都通过后才会创建账号。'));
+      '邮箱登录后会要求绑定手机号；绑定后手机号与邮箱属于同一个账户，之后用哪个都能登录。'));
   }
 
   function panePasskey(wrap, d) {
@@ -1170,7 +1101,7 @@
 
   /* =============================================================== 账号设置 */
   async function openSettings() {
-    if (!cloudUser) { openAcct(); return; }
+    if (!loggedIn()) { openAcct(); return; }
     var d = vDialog('sm-settings', { title: '账号设置', width: '440px' });
     d.body.appendChild(m('div', 'text-body-2 text-medium-emphasis mb-2',
       '管理绑定的手机号 / 邮箱 / 密码 / 通行密钥 / 第三方账号'));
@@ -1178,15 +1109,16 @@
 
     var secProfile = vList();
     var nameField = vField('昵称（可选）');
-    nameField.querySelector('input').value = (acctProfile && acctProfile.display_name) || '';
+    nameField.querySelector('input').value = (idUser && idUser.name) || '';
     var saveName = vBtn('保存', 'tonal', async function () {
-      await dbSaveProfile({ display_name: (nameField.getValue() || '').trim().slice(0, 24) || null });
+      var r = await idPost('/api/id/profile', { name: (nameField.getValue() || '').trim().slice(0, 24) });
+      if (r.user) idUser = r.user;
       toast('昵称已保存');
     });
     saveName.style.minWidth = 'auto';
     secProfile.appendChild(vListItem({
-      icon: 'mdi-account', title: cloudUser.email || cloudUser.phone || '已登录',
-      sub: '账号 ID ' + String(cloudUser.id || '').slice(0, 8)
+      icon: 'mdi-account', title: (idUser && (idUser.email || idUser.phone)) || '已登录',
+      sub: '账号 ID ' + String((idUser && idUser.uid) || '').slice(0, 12)
     }));
     var nameItem = vListItem({ title: '昵称', action: saveName });
     var nameWrap = m('div', 'd-flex align-center ga-2 px-4 pb-2');
@@ -1199,21 +1131,21 @@
     d.body.appendChild(secProfile);
 
     var secBind = vList();
-    var phoneBtn = vBtn((acctProfile && acctProfile.phone) ? '换绑' : '绑定', 'tonal', function () {
+    var phoneBtn = vBtn((idUser && idUser.phone) ? '换绑' : '绑定', 'tonal', function () {
       d.close();
-      openBindPhone({ title: (acctProfile && acctProfile.phone) ? '换绑手机号' : '绑定手机号' });
+      openBindPhone({ title: (idUser && idUser.phone) ? '换绑手机号' : '绑定手机号' });
     });
     phoneBtn.style.minWidth = 'auto';
     secBind.appendChild(vListItem({
       icon: 'mdi-cellphone', title: '手机号',
-      sub: (acctProfile && acctProfile.phone)
-        ? acctProfile.phone + (acctProfile.phone_verified ? ' · 已验证' : ' · 未验证')
+      sub: (idUser && idUser.phone)
+        ? idUser.phone + (idUser.phoneVerified ? ' · 已验证' : ' · 未验证')
         : '未绑定 · 建议立即绑定',
       action: phoneBtn
     }));
     secBind.appendChild(vListItem({
       icon: 'mdi-email', title: '邮箱',
-      sub: cloudUser.email ? cloudUser.email : '未绑定（当前账号为手机号注册）'
+      sub: (idUser && idUser.email) ? idUser.email : '未绑定 · 绑定后可用邮箱登录同一个账号'
     }));
     var pwBtn = vBtn(acctHasPassword ? '修改' : '设置', 'tonal', function () { d.close(); openPasswordCard(); });
     pwBtn.style.minWidth = 'auto';
@@ -1224,7 +1156,7 @@
     }));
     secBind.appendChild(vListItem({
       icon: 'mdi-link-variant', title: '第三方账号',
-      sub: '微信 / WorkBuddy · 登录一次后自动关联到当前账号'
+      sub: ((idUser && idUser.oauth && idUser.oauth.length) ? '已关联：' + idUser.oauth.join(' / ') + ' · ' : '') + '微信 / WorkBuddy 登录后自动并入当前账号'
     }));
     d.body.appendChild(secBind);
 
@@ -1249,8 +1181,7 @@
     var act = d.actions();
     var sync = vBtn('立即同步', 'text', function () { syncNow(sync); });
     var out = vBtn('退出登录', 'text', async function () {
-      try { await cloudClient.auth.signOut(); } catch (e) { /* ignore */ }
-      cloudUser = null; acctProfile = null;
+      await idLogout();
       d.close();
       toast('已退出登录（收藏保留在本机）');
     });
@@ -1277,10 +1208,9 @@
       if (pw1.getValue() !== pw2.getValue()) { toast('两次输入的密码不一致'); return; }
       go.disabled = true; setBtn(go, '保存中…');
       try {
-        await apiPost('/api/auth/password/set', {
+        await idPost('/api/id/password', {
           password: pw1.getValue(),
-          oldPassword: old ? old.getValue() : undefined,
-          identifier: (cloudUser.email || '').toLowerCase()
+          oldPassword: old ? old.getValue() : undefined
         });
         acctHasPassword = true;
         toast('密码已保存');
@@ -1326,7 +1256,7 @@
       savePlaces(list);
       renderList();
       cloudPushPlace(list[list.length - 1]);
-      toast('已保存' + (cloudUser ? '，已同步到云端' : ''));
+      toast('已保存' + (loggedIn() ? '，已同步到账号' : '（未登录，仅存本机）'));
     }));
     row.appendChild(vBtn('复制分享链接', 'tonal', function () {
       var v = captureView();
@@ -1428,8 +1358,8 @@
       box.appendChild(m('div', 'text-caption text-medium-emphasis', '云同步未就绪（SDK 未加载），收藏仍保存在本机。'));
       return;
     }
-    if (cloudUser) {
-      var who = (acctProfile && acctProfile.display_name) || cloudUser.email || cloudUser.phone || '已登录';
+    if (loggedIn()) {
+      var who = (idUser && idUser.name) || idUser.email || idUser.phone || '已登录';
       var list = vList();
       var setting = vBtn('账号设置', 'tonal', function () { d.close(); openSettings(); });
       setting.style.minWidth = 'auto';
@@ -1439,7 +1369,7 @@
         action: setting
       }));
       box.appendChild(list);
-      if (!acctProfile) refreshAcctState().then(function () { renderAccountBox(box, d); });
+      if (!idUser) refreshAcctState().then(function () { renderAccountBox(box, d); });
     } else {
       var list2 = vList();
       var go = vBtn('登录 / 注册', 'tonal', function () { d.close(); openAcct(); });
@@ -1477,7 +1407,7 @@
   /* 把入口做进原版左侧菜单（v-list-item 结构，与 今晚/我的观测/日历 同源） */
   var menuItems = [
     { icon: 'mdi-star-box', text: '我的星图', run: function () { openPlaces(); } },
-    { icon: 'mdi-account-circle', text: '账号', run: function () { cloudUser ? openSettings() : openAcct(); } }
+    { icon: 'mdi-account-circle', text: '账号', run: function () { loggedIn() ? openSettings() : openAcct(); } }
   ];
 
   function injectMenu() {
@@ -1591,30 +1521,6 @@
   }
 
   /* ============================================================= 登录收尾 */
-  async function afterSignIn(email, phone) {
-    try {
-      if (email || phone) {
-        await cloudClient.database.from('sweb_profiles').insert([{
-          email: email || null, phone: phone || null,
-          email_verified: !!email, phone_verified: !!phone
-        }]);
-      }
-    } catch (e) { /* 档案已存在或网络抖动 */ }
-    if (phone) {
-      try { await cloudClient.database.from('sweb_phone_claims').insert([{ phone: phone }]); }
-      catch (e) { toast('提示：该手机号已被其他账号绑定过'); }
-    }
-    syncNow(null);
-    refreshPasskeySession();
-    checkGate();
-  }
-
-  async function onCloudSignedIn() {
-    syncNow(null);
-    refreshPasskeySession();
-    await checkGate();
-  }
-
   /* ================================================================== 启动 */
   function boot() {
     bootstrapLang();
@@ -1626,7 +1532,7 @@
 
     /* ?__preview=1：仅本地预览账号相关界面（不产生真实登录态） */
     if (/[?&]__preview=/.test(location.search)) {
-      cloudUser = { email: 'preview@example.com', id: 'preview' };
+      idUser = { email: 'preview@example.com', uid: 'preview', phone: '', phoneVerified: false }; setToken('preview');
       window.__smPreview = {
         places: openPlaces, acct: openAcct, settings: openSettings,
         gate: checkGate, info: openMirrorInfo, bindPhone: openBindPhone

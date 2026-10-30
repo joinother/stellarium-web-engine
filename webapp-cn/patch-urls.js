@@ -18,6 +18,10 @@ JS_PATCHES = [
      "'© 高德地图'"),
     # 官方账号后端 → 本站桩（未登录态）
     ('api_base:"https://api.stellarium.com/api/v2"', 'api_base:"./api-v2"'),
+    # 其余境外地理编码服务（都需付费 key，未配置时不会用，但兜底改掉避免误触发境外请求）
+    ('https://maps.googleapis.com/maps/api/geocode/json', '/api/nominatim/search'),
+    ('https://api.mapbox.com/geocoding/v5/mapbox.places/', '/api/nominatim/search?q='),
+    ('https://www.mapquestapi.com/geocoding/v1', '/api/nominatim/search'),
 ]
 
 WASM_PATCHES = [

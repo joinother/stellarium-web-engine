@@ -6,6 +6,7 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 const wa = require('./webauthn');
 const geo = require('./geo');
+const identity = require('./identity');
 
 const ROOT = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
@@ -548,6 +549,8 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith('/api/')) {
     try {
       if (url.pathname === '/api/health') return json(res, 200, { ok: true, app: APP_NAME, passkeys: readBroker().records.length });
+      // 统一身份层：手机 / 邮箱 / 通行密钥 / 第三方 任一身份都归到同一个账户
+      if (url.pathname.startsWith('/api/id/')) return await identity.handle(req, res, url);
       if (url.pathname.startsWith('/api/passkey/')) return await handlePasskey(req, res, url);
       if (url.pathname.startsWith('/api/auth/password/')) return await handlePassword(req, res, url);
       if (url.pathname.startsWith('/api/map/') || url.pathname.startsWith('/api/nominatim/') || url.pathname.startsWith('/api/geoip')) {
