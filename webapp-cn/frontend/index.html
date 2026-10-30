@@ -27,21 +27,15 @@
     <link rel="stylesheet" crossorigin href="./assets/index-D4IBqhPY.css">
   <!-- 星象仪网页版（Stellarium Web 国内镜像）· 上游: https://github.com/Stellarium/stellarium-web-engine (AGPL-3.0) · 详见 NOTICE.txt -->
 <meta name="description" content="星象仪网页版：基于 Stellarium Web 的星空模拟，全部星表、星座文化与地景数据本地托管，无需访问境外 CDN。">
-<link rel="stylesheet" href="./mirror.css">
-<link rel="stylesheet" href="./mirror-cloud.css">
+<link rel="stylesheet" href="./mirror-ui.css">
 </head>
   <body>
     <div id="nightmode"></div>
     <noscript>
-      <strong>We're sorry but stellarium-web doesn't work properly without JavaScript enabled. Please enable it to continue.</strong>
+      <strong>很抱歉，本页需要启用 JavaScript 才能正常运行。请在浏览器中开启 JavaScript 后重试。</strong>
     </noscript>
     <div id="app"></div>
-  <div id="mirror-badge">
-  <strong>星象仪网页版</strong> · 数据本地托管 · <a href="https://github.com/Stellarium/stellarium-web-engine" target="_blank" rel="noopener">Stellarium Web Engine</a>（AGPL-3.0）
-  <button id="mirror-badge-x" title="关闭">×</button>
-</div>
-<script src="./mirror.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@dev/lib/index.global.js"></script>
+<script src="./vendor/workbuddy-cloud-sdk.js"></script>
 <script src="./mirror-ui.js"></script>
 </body>
 </html>

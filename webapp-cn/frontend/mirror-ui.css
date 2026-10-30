@@ -1,0 +1,26 @@
+/*
+ * 星象仪网页版 · 增强层辅助样式
+ * 只保留原版 Vuetify 无法表达的少量布局规则，不另定义视觉风格：
+ * 颜色 / 圆角 / 阴影 / 字体全部沿用原版 Vuetify 的 class。
+ */
+
+/* v-tabs 手工结构下的内容排布（原版由 v-slide-group 的 flex 布局提供） */
+.sm-tabs .v-slide-group__container { overflow: visible; }
+.sm-tabs .v-slide-group__content { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* 提示条（v-snackbar 手工挂载到 body 时的定位） */
+.sm-snack {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+  pointer-events: none;
+}
+.sm-snack .v-snackbar__wrapper { pointer-events: auto; }
+
+/* 对话框内列表项的操作区不要被压缩 */
+.sm-overlay .v-list-item__append { flex: 0 0 auto; }
+.sm-overlay .v-card-text { max-height: 68vh; overflow-y: auto; }

@@ -1,15 +1,18 @@
-// 星象仪网页版（Stellarium Web 国内镜像）静态服务 + 通行密钥后端
+// 星象仪网页版（Stellarium Web 国内镜像）静态服务 + 通行密钥/密码后端 + 国内地图代理
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const wa = require('./webauthn');
+const geo = require('./geo');
 
 const ROOT = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
 const BROKER_FILE = path.join(DATA_DIR, 'broker.json');
 const KEY_FILE = path.join(DATA_DIR, 'broker.key');
+const PW_FILE = path.join(DATA_DIR, 'passwords.json');
+const USER_SESSION_FILE = path.join(DATA_DIR, 'userSessions.json');
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.BIND_IP || '0.0.0.0';
 const APP_NAME = '星象仪网页版';
@@ -234,6 +237,7 @@ async function handlePasskey(req, res, url) {
     };
     db.records.push(rec);
     writeBroker(db);
+    if (body.session && body.session.value) saveUserSession(ownerId, body.session);
     return json(res, 200, { ok: true, id: info.credId, label: rec.label });
   }
 
@@ -315,10 +319,123 @@ async function handlePasskey(req, res, url) {
       }
     }
     writeBroker(db);
+    // 同时按用户归档一份，供密码登录恢复
+    saveUserSession(user.id, body.session);
     return json(res, 200, { ok: true, updated: n });
   }
 
   return json(res, 404, { error: 'unknown endpoint' });
+}
+
+/* ------------------------------------------------- 密码登录 / 每用户会话存档 */
+function readJson(file, fallback) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return fallback; }
+}
+function writeJson(file, obj) {
+  try { fs.writeFileSync(file, JSON.stringify(obj, null, 1)); } catch (e) { /* 只读盘：进程内可用 */ }
+}
+
+function hashPassword(password, salt) {
+  salt = salt || crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(password), salt, 32, { N: 16384, r: 8, p: 1 }).toString('hex');
+  return { salt, hash };
+}
+
+function verifyPassword(password, rec) {
+  if (!rec || !rec.salt || !rec.hash) return false;
+  const h = hashPassword(password, rec.salt);
+  const a = Buffer.from(h.hash, 'hex'), b = Buffer.from(rec.hash, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** 把某个登录会话按用户归档，供密码登录 / 会话刷新恢复 */
+function saveUserSession(ownerId, session) {
+  if (!ownerId || !session || !session.value) return;
+  const db = readJson(USER_SESSION_FILE, {});
+  db[ownerId] = {
+    sealed: sealSession(session),
+    key: String(session.key || ''),
+    account: session.account || null,
+    updatedAt: Date.now(),
+  };
+  writeJson(USER_SESSION_FILE, db);
+}
+
+function loadUserSession(ownerId) {
+  const db = readJson(USER_SESSION_FILE, {});
+  const rec = db[ownerId];
+  if (!rec) return null;
+  try {
+    return { blob: openSession(rec.sealed), key: rec.key, account: rec.account };
+  } catch (e) { return null; }
+}
+
+function handlePassword(req, res, url) {
+  return (async () => {
+    const p = url.pathname;
+
+    // 登录：验证密码后下发归档会话（等价于通行密钥登录的会话恢复路径）
+    if (p === '/api/auth/password/login' && req.method === 'POST') {
+      const body = await readBody(req);
+      const id = String(body.identifier || body.email || '').trim().toLowerCase();
+      const password = String(body.password || '');
+      if (!id || !password) return json(res, 400, { error: '请填写账号与密码' });
+      const db = readJson(PW_FILE, {});
+      let ownerId = null;
+      for (const [uid, rec] of Object.entries(db)) {
+        if ((rec.identifier || '').toLowerCase() === id) { ownerId = uid; break; }
+      }
+      if (!ownerId || !verifyPassword(password, db[ownerId])) {
+        return json(res, 401, { error: '账号或密码不正确' });
+      }
+      const saved = loadUserSession(ownerId);
+      if (!saved || !saved.blob) {
+        return json(res, 409, { error: '服务器还没有这个账号的登录凭据存档（重新部署或首次使用），请先用验证码登录一次，然后在设置里设置密码' });
+      }
+      const blob = saved.blob;
+      const sessKey = (blob && blob.key) || saved.key;
+      const sessVal = blob && typeof blob.value === 'string' ? blob.value : JSON.stringify(blob);
+      if (!sessKey || !sessVal) return json(res, 409, { error: '存档不完整，请用验证码登录一次' });
+      return json(res, 200, { ok: true, session: { key: sessKey, value: sessVal }, account: saved.account || {} });
+    }
+
+    // 设置 / 修改密码（需要登录态）
+    if (p === '/api/auth/password/set' && req.method === 'POST') {
+      const user = await resolveUser(req);
+      if (!user) return json(res, 401, { error: '需要登录' });
+      const body = await readBody(req);
+      const password = String(body.password || '');
+      if (password.length < 8) return json(res, 400, { error: '密码至少 8 位' });
+      const db = readJson(PW_FILE, {});
+      const prev = db[user.id];
+      if (prev && prev.hash) {
+        if (!verifyPassword(String(body.oldPassword || ''), prev)) {
+          return json(res, 403, { error: '原密码不正确' });
+        }
+      }
+      const { salt, hash } = hashPassword(password);
+      const saved = loadUserSession(user.id);
+      db[user.id] = {
+        salt, hash,
+        identifier: String(body.identifier || user.email || user.phone || '').trim().toLowerCase(),
+        hasSession: !!saved,
+        updatedAt: Date.now(),
+      };
+      writeJson(PW_FILE, db);
+      return json(res, 200, { ok: true });
+    }
+
+    // 查询当前账号是否已设置密码
+    if (p === '/api/auth/password/status' && req.method === 'POST') {
+      const user = await resolveUser(req);
+      if (!user) return json(res, 401, { error: '需要登录' });
+      const db = readJson(PW_FILE, {});
+      const rec = db[user.id];
+      return json(res, 200, { hasPassword: !!(rec && rec.hash), identifier: rec ? rec.identifier : '' });
+    }
+
+    return json(res, 404, { error: 'unknown endpoint' });
+  })();
 }
 
 /* ---------------------------------------------------------------- 静态服务 */
@@ -382,10 +499,20 @@ const server = http.createServer(async (req, res) => {
     try {
       if (url.pathname === '/api/health') return json(res, 200, { ok: true, app: APP_NAME, passkeys: readBroker().records.length });
       if (url.pathname.startsWith('/api/passkey/')) return await handlePasskey(req, res, url);
+      if (url.pathname.startsWith('/api/auth/password/')) return await handlePassword(req, res, url);
+      if (url.pathname.startsWith('/api/map/') || url.pathname.startsWith('/api/nominatim/') || url.pathname.startsWith('/api/geoip')) {
+        const done = await geo.handleGeo(req, res, url);
+        if (done !== false) return done;
+      }
       return json(res, 404, { error: 'unknown endpoint' });
     } catch (e) {
       return json(res, 500, { error: e.message || 'server error' });
     }
+  }
+
+  // 引擎里硬编码的官方账号后端已改指向这里：明确返回未登录，避免报跨域/连接错误
+  if (url.pathname.startsWith('/api-v2/')) {
+    return json(res, 401, { error: 'account service replaced by local auth (星象仪网页版)' });
   }
 
   serveStatic(req, res, url.pathname);
